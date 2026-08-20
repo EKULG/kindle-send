@@ -49,10 +49,10 @@ pip install .
 2. Create an [App Password](https://myaccount.google.com/apppasswords) (select Mail / Other)
 3. Copy the 16-character password
 
-### 2. Amazon Send-to-Kindle
+### 2. Your Kindle email
 
 1. Open [Manage Your Content & Devices](https://www.amazon.com/hz/mycd/digital-console/accountsettings) → **Preferences** → **Personal Document Settings**
-2. Note your **Send-to-Kindle Email** (e.g. `yourname@kindle.com`)
+2. Note your **Kindle email** (e.g. `yourname@kindle.com`)
 3. Under **Approved Personal Document E-mail List**, add the Gmail address you will send from
 
 ### 3. Configure kindle-send
@@ -88,13 +88,13 @@ kindle-send https://example.com/essay -o preview.epub
 
 **Could not extract article content.** The page is probably paywalled, login-gated, or rendered only in JavaScript. Use `--dry-run` or `-o preview.epub` to inspect what was extracted before sending.
 
-**EPUB is over 50 MB.** Amazon’s Send-to-Kindle email limit is 50 MB. Retry with `--no-images`, or upload the EPUB through [Send to Kindle](https://www.amazon.com/sendtokindle) in a browser (up to 200 MB).
+**EPUB is over 50 MB.** kindle-send emails must stay under Amazon’s 50 MB attachment limit. Retry with `--no-images`, or upload the EPUB through [Amazon’s web uploader](https://www.amazon.com/sendtokindle) (up to 200 MB).
 
 **No config found.** Run `kindle-send --configure` in a terminal. The file is `~/.config/kindle-send/config.toml`.
 
 ## Notes
 
-- EPUB is the format Amazon converts most reliably for Send-to-Kindle (reflowable text, fonts, highlights).
+- EPUB is the format Amazon converts most reliably for kindle-send (reflowable text, fonts, highlights).
 - Images are resized automatically so typical articles stay under the email size limit.
 
 ## Development
