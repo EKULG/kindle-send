@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import re
 from pathlib import Path
 from typing import Optional
+from urllib.parse import unquote_to_bytes, urljoin, urlparse
 from xml.sax.saxutils import escape
 
 import requests
@@ -14,7 +16,7 @@ from ebooklib import epub
 from lxml import html as lxml_html
 from PIL import Image
 
-from kindle_send.extract import Article, USER_AGENT
+from kindle_send.extract import Article, USER_AGENT, _read_capped
 
 
 KINDLE_CSS = """
@@ -56,7 +58,21 @@ a { color: inherit; text-decoration: underline; }
 
 MAX_IMAGE_WIDTH = 800
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
+MAX_IMAGE_DOWNLOAD_BYTES = MAX_IMAGE_BYTES * 4
 IMAGE_TIMEOUT = 15
+_LAZY_SRC_ATTRS = ("data-src", "data-lazy-src", "data-original", "data-url")
+_PLACEHOLDER_HINTS = ("placeholder", "spacer", "1x1", "pixel.gif", "blank.", "transparent")
+_IMG_ATTRS_TO_DROP = (
+    "srcset",
+    "data-srcset",
+    "sizes",
+    "loading",
+    "decoding",
+    "data-src",
+    "data-lazy-src",
+    "data-original",
+    "data-url",
+)
 
 
 def build_epub(
@@ -89,7 +105,7 @@ def build_epub(
 
     body_html = article.html
     if include_images:
-        body_html, image_items = _embed_images(body_html)
+        body_html, image_items = _embed_images(body_html, base_url=article.url)
         for item in image_items:
             book.add_item(item)
     else:
@@ -155,7 +171,7 @@ def _strip_images(html: str) -> str:
     )
 
 
-def _embed_images(html: str) -> tuple[str, list[epub.EpubItem]]:
+def _embed_images(html: str, *, base_url: str) -> tuple[str, list[epub.EpubItem]]:
     # Wrap fragment so lxml always has a root we can serialize children from
     try:
         wrapper = lxml_html.fragment_fromstring(f"<div>{html}</div>", create_parent=False)
@@ -170,17 +186,17 @@ def _embed_images(html: str) -> tuple[str, list[epub.EpubItem]]:
     index = 0
 
     for img in wrapper.xpath(".//img"):
-        src = (img.get("src") or "").strip()
-        if not src or src.startswith("data:"):
-            if src.startswith("data:") and len(src) > 200_000:
-                img.drop_tree()
+        src = _pick_image_url(img, base_url)
+        if not src:
+            img.drop_tree()
             continue
 
         if src in seen:
             img.set("src", seen[src])
+            _drop_img_attrs(img)
             continue
 
-        processed = _download_and_process_image(src)
+        processed = _load_and_process_image(src, referer=base_url)
         if processed is None:
             img.drop_tree()
             continue
@@ -197,9 +213,7 @@ def _embed_images(html: str) -> tuple[str, list[epub.EpubItem]]:
         items.append(item)
         seen[src] = file_name
         img.set("src", file_name)
-        for attr in ("srcset", "sizes", "loading", "decoding", "data-src"):
-            if attr in img.attrib:
-                del img.attrib[attr]
+        _drop_img_attrs(img)
 
     body = "".join(
         lxml_html.tostring(child, encoding="unicode", method="html")
@@ -208,24 +222,144 @@ def _embed_images(html: str) -> tuple[str, list[epub.EpubItem]]:
     return body, items
 
 
-def _download_and_process_image(
-    url: str,
-) -> Optional[tuple[bytes, str, str]]:
-    headers = {"User-Agent": USER_AGENT, "Accept": "image/*,*/*"}
+def _drop_img_attrs(img) -> None:
+    for attr in _IMG_ATTRS_TO_DROP:
+        if attr in img.attrib:
+            del img.attrib[attr]
+
+
+def _is_http_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def _is_placeholder_url(url: str) -> bool:
+    lower = url.lower()
+    return any(hint in lower for hint in _PLACEHOLDER_HINTS)
+
+
+def _best_srcset_url(srcset: str) -> Optional[str]:
+    """Pick the srcset candidate closest to MAX_IMAGE_WIDTH."""
+    if not srcset:
+        return None
+    candidates: list[tuple[int, str]] = []
+    for part in srcset.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        bits = part.split()
+        candidate_url = bits[0]
+        width = 0
+        if len(bits) > 1:
+            descriptor = bits[1]
+            try:
+                if descriptor.endswith("w"):
+                    width = int(descriptor[:-1])
+                elif descriptor.endswith("x"):
+                    width = int(float(descriptor[:-1]) * MAX_IMAGE_WIDTH)
+            except ValueError:
+                width = 0
+        candidates.append((width, candidate_url))
+    if not candidates:
+        return None
+
+    def sort_key(item: tuple[int, str]) -> tuple[int, int, int]:
+        width, _url = item
+        if width <= 0:
+            return (1, 0, 0)
+        return (0, abs(width - MAX_IMAGE_WIDTH), -width)
+
+    candidates.sort(key=sort_key)
+    return candidates[0][1]
+
+
+def _pick_image_url(img, base_url: str) -> Optional[str]:
+    src = (img.get("src") or "").strip()
+    srcset = (img.get("srcset") or img.get("data-srcset") or "").strip()
+    lazy = ""
+    for attr in _LAZY_SRC_ATTRS:
+        lazy = (img.get(attr) or "").strip()
+        if lazy:
+            break
+
+    http_candidates: list[str] = []
+    best_srcset = _best_srcset_url(srcset)
+    if best_srcset:
+        http_candidates.append(urljoin(base_url, best_srcset))
+    if lazy and not lazy.startswith("data:"):
+        http_candidates.append(urljoin(base_url, lazy))
+    if src and not src.startswith("data:"):
+        http_candidates.append(urljoin(base_url, src))
+
+    for candidate in http_candidates:
+        if _is_http_url(candidate) and not _is_placeholder_url(candidate):
+            return candidate
+    for candidate in http_candidates:
+        if _is_http_url(candidate):
+            return candidate
+
+    if src.startswith("data:image/"):
+        return src
+    if lazy.startswith("data:image/"):
+        return lazy
+    return None
+
+
+def _decode_data_url(src: str) -> Optional[bytes]:
+    if not src.startswith("data:") or "," not in src:
+        return None
+    header, payload = src.split(",", 1)
     try:
-        response = requests.get(url, headers=headers, timeout=IMAGE_TIMEOUT, stream=True)
-        response.raise_for_status()
-        raw = response.content
+        if ";base64" in header.lower():
+            return base64.b64decode(payload)
+        return unquote_to_bytes(payload)
+    except Exception:
+        return None
+
+
+def _download_image(url: str, *, referer: str) -> Optional[bytes]:
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        "Referer": referer,
+    }
+    try:
+        with requests.get(url, headers=headers, timeout=IMAGE_TIMEOUT, stream=True) as response:
+            response.raise_for_status()
+            content_length = response.headers.get("Content-Length")
+            if (
+                content_length
+                and content_length.isdigit()
+                and int(content_length) > MAX_IMAGE_DOWNLOAD_BYTES
+            ):
+                return None
+            return _read_capped(response, MAX_IMAGE_DOWNLOAD_BYTES)
     except requests.RequestException:
         return None
 
-    if not raw or len(raw) > MAX_IMAGE_BYTES * 4:
+
+def _load_and_process_image(
+    url: str,
+    *,
+    referer: str,
+) -> Optional[tuple[bytes, str, str]]:
+    if url.startswith("data:"):
+        raw = _decode_data_url(url)
+    elif _is_http_url(url):
+        raw = _download_image(url, referer=referer)
+    else:
+        return None
+
+    if not raw:
         return None
 
     try:
         image = Image.open(io.BytesIO(raw))
         image.load()
     except Exception:
+        return None
+
+    if image.width < 8 or image.height < 8:
         return None
 
     # Convert exotic modes / formats to something Kindle-friendly

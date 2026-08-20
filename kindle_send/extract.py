@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlparse
@@ -17,6 +18,9 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/120.0.0.0 Safari/537.36"
 )
+
+MAX_HTML_BYTES = 15 * 1024 * 1024
+_CHUNK_SIZE = 64 * 1024
 
 
 @dataclass
@@ -36,21 +40,49 @@ class ExtractionError(Exception):
     """Raised when article content cannot be extracted from a URL."""
 
 
-def _fetch_html(url: str, timeout: int = 30) -> str:
+def _read_capped(response: requests.Response, max_bytes: int) -> Optional[bytes]:
+    """Read a response body, aborting if it exceeds *max_bytes*."""
+    buf = io.BytesIO()
+    for chunk in response.iter_content(chunk_size=_CHUNK_SIZE):
+        if not chunk:
+            continue
+        buf.write(chunk)
+        if buf.tell() > max_bytes:
+            return None
+    return buf.getvalue()
+
+
+def _fetch_html(url: str, timeout: int = 30) -> tuple[bytes, str]:
+    """Download *url* as bytes and return ``(body, final_url)`` after redirects."""
     headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
     try:
-        response = requests.get(url, headers=headers, timeout=timeout)
-        response.raise_for_status()
+        with requests.get(url, headers=headers, timeout=timeout, stream=True) as response:
+            response.raise_for_status()
+            content_type = response.headers.get("Content-Type", "")
+            content_length = response.headers.get("Content-Length")
+            if content_length and content_length.isdigit() and int(content_length) > MAX_HTML_BYTES:
+                raise ExtractionError(
+                    f"Page is too large to extract ({int(content_length)} bytes)"
+                )
+            raw = _read_capped(response, MAX_HTML_BYTES)
+            final_url = response.url
+    except ExtractionError:
+        raise
     except requests.RequestException as exc:
         raise ExtractionError(f"Failed to fetch URL: {exc}") from exc
 
-    content_type = response.headers.get("Content-Type", "")
-    if "html" not in content_type.lower() and not response.text.lstrip().startswith("<"):
+    if raw is None:
+        raise ExtractionError(
+            f"Page is too large to extract (over {MAX_HTML_BYTES} bytes)"
+        )
+
+    looks_html = "html" in content_type.lower() or raw.lstrip()[:64].startswith(b"<")
+    if not looks_html:
         raise ExtractionError(
             f"URL does not appear to be an HTML page (Content-Type: {content_type or 'unknown'})"
         )
 
-    return response.text
+    return raw, final_url
 
 
 def _as_fragment(html: str, base_url: str) -> str:
@@ -94,7 +126,7 @@ def extract_article(url: str, title_override: Optional[str] = None) -> Article:
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise ExtractionError(f"Invalid URL (expected http/https): {url}")
 
-    downloaded = _fetch_html(url)
+    downloaded, canonical_url = _fetch_html(url)
 
     config = use_config()
     config.set("DEFAULT", "EXTRACTION_TIMEOUT", "0")
@@ -102,7 +134,7 @@ def extract_article(url: str, title_override: Optional[str] = None) -> Article:
     # Metadata pass (plain text / Document fields)
     meta = trafilatura.bare_extraction(
         downloaded,
-        url=url,
+        url=canonical_url,
         include_comments=False,
         include_tables=True,
         include_images=True,
@@ -132,7 +164,7 @@ def extract_article(url: str, title_override: Optional[str] = None) -> Article:
     # HTML body pass — real <img>/<p>/<h*> markup for EPUB
     body_html = trafilatura.extract(
         downloaded,
-        url=url,
+        url=canonical_url,
         include_comments=False,
         include_tables=True,
         include_images=True,
@@ -145,7 +177,7 @@ def extract_article(url: str, title_override: Optional[str] = None) -> Article:
         # Last resort: plain text wrapped in paragraphs
         plain = trafilatura.extract(
             downloaded,
-            url=url,
+            url=canonical_url,
             include_comments=False,
             config=config,
         )
@@ -158,19 +190,19 @@ def extract_article(url: str, title_override: Optional[str] = None) -> Article:
             "JavaScript-rendered, or not an article."
         )
 
-    body_html = _as_fragment(body_html, url)
+    body_html = _as_fragment(body_html, canonical_url)
     if not body_html.strip():
         raise ExtractionError(
             "Could not extract article content. The page may be paywalled, "
             "JavaScript-rendered, or not an article."
         )
 
-    final_title = (title_override or title or _fallback_title(url)).strip()
+    final_title = (title_override or title or _fallback_title(canonical_url)).strip()
     if not final_title:
         final_title = "Untitled Article"
 
     return Article(
-        url=url,
+        url=canonical_url,
         title=final_title,
         html=body_html,
         author=author,
