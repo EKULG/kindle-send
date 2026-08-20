@@ -19,6 +19,12 @@ Not affiliated with Amazon or Google.
 
 Requires Python 3.10+. [`pipx`](https://pipx.pypa.io/) is the simplest way to install a CLI.
 
+From GitHub:
+
+```bash
+pipx install git+https://github.com/EKULG/kindle-send.git
+```
+
 From a clone of this repository:
 
 ```bash
@@ -32,6 +38,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install .
 ```
+
+`python -m kindle_send` works as well as the `kindle-send` command.
 
 ## One-time setup
 
@@ -72,12 +80,31 @@ kindle-send https://example.com/essay --dry-run
 kindle-send https://example.com/essay -o preview.epub
 ```
 
+## Troubleshooting
+
+**Gmail authentication failed.** Use a Google [App Password](https://myaccount.google.com/apppasswords), not your normal Gmail password. 2-Step Verification must be enabled. If you rotated the app password, run `kindle-send --configure` again (leave the password blank to keep the current one, or paste the new one).
+
+**Email sent, but nothing appears on the Kindle.** Add the sending Gmail address to Amazon’s **Approved Personal Document E-mail List**. Delivery can take a minute or two after Amazon converts the file; the Kindle needs Wi-Fi. Check [Manage Your Content](https://www.amazon.com/hz/mycd/digital-console/) for the document.
+
+**Could not extract article content.** The page is probably paywalled, login-gated, or rendered only in JavaScript. Use `--dry-run` or `-o preview.epub` to inspect what was extracted before sending.
+
+**EPUB is over 50 MB.** Amazon’s Send-to-Kindle email limit is 50 MB. Retry with `--no-images`, or upload the EPUB through [Send to Kindle](https://www.amazon.com/sendtokindle) in a browser (up to 200 MB).
+
+**No config found.** Run `kindle-send --configure` in a terminal. The file is `~/.config/kindle-send/config.toml`.
+
 ## Notes
 
 - EPUB is the format Amazon converts most reliably for Send-to-Kindle (reflowable text, fonts, highlights).
-- Email attachments must stay under Amazon’s ~50 MB limit; images are resized automatically.
-- Pages that are heavily JavaScript-rendered or paywalled may fail extraction. Use `--dry-run` to inspect the EPUB first.
-- Delivery can take a minute or two after Amazon converts the file; ensure Wi‑Fi is on for your Kindle.
+- Images are resized automatically so typical articles stay under the email size limit.
+
+## Development
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+```
 
 ## License
 
