@@ -16,6 +16,10 @@ class MailError(Exception):
     """Raised when the EPUB cannot be emailed to Kindle."""
 
 
+# Amazon Send-to-Kindle email attachments must be 50 MB or smaller.
+MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
+
+
 def send_epub(
     config: Config,
     epub_path: Path | str,
@@ -26,6 +30,13 @@ def send_epub(
     epub_path = Path(epub_path)
     if not epub_path.is_file():
         raise MailError(f"EPUB not found: {epub_path}")
+
+    size = epub_path.stat().st_size
+    if size > MAX_ATTACHMENT_BYTES:
+        raise MailError(
+            f"EPUB is {size / (1024 * 1024):.1f} MB; Amazon email attachments "
+            "must be 50 MB or smaller. Try --no-images."
+        )
 
     filename = epub_path.name
     msg = MIMEMultipart()

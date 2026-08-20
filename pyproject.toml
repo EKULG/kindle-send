@@ -26,6 +26,7 @@ classifiers = [
 dependencies = [
     "trafilatura>=1.12",
     "ebooklib>=0.18",
+    "lxml>=4.9",
     "requests>=2.31",
     "Pillow>=10.0",
     "tomli>=2.0; python_version < '3.11'",

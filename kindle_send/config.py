@@ -98,7 +98,7 @@ def interactive_setup(path: Path = CONFIG_PATH) -> Config:
     )
     gmail_app_password = _prompt(
         "Gmail app password",
-        default=None,
+        default=existing.gmail_app_password if existing else None,
         secret=True,
         validator=lambda s: len(s.replace(" ", "")) >= 16,
         hint="16 characters from Google App Passwords",
@@ -108,6 +108,8 @@ def interactive_setup(path: Path = CONFIG_PATH) -> Config:
         kindle_email=kindle_email,
         gmail_address=gmail_address,
         gmail_app_password=gmail_app_password.replace(" ", ""),
+        smtp_host=existing.smtp_host if existing else "smtp.gmail.com",
+        smtp_port=existing.smtp_port if existing else 465,
     )
     saved = save_config(config, path)
     print(f"\nSaved config to {saved}")
@@ -144,7 +146,12 @@ def _prompt(
     hint: Optional[str] = None,
 ) -> str:
     while True:
-        suffix = f" [{default}]" if default else ""
+        if secret and default:
+            suffix = " [leave blank to keep existing]"
+        elif default:
+            suffix = f" [{default}]"
+        else:
+            suffix = ""
         prompt = f"{label}{suffix}: "
         if secret:
             value = getpass.getpass(prompt)

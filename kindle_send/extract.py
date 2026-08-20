@@ -6,6 +6,7 @@ import io
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlparse
+from xml.sax.saxutils import escape
 
 import requests
 import trafilatura
@@ -182,7 +183,7 @@ def extract_article(url: str, title_override: Optional[str] = None) -> Article:
             config=config,
         )
         if plain and plain.strip():
-            body_html = "".join(f"<p>{line}</p>" for line in plain.splitlines() if line.strip())
+            body_html = _paragraphs_from_plain(plain)
 
     if not body_html or not body_html.strip():
         raise ExtractionError(
@@ -209,6 +210,13 @@ def extract_article(url: str, title_override: Optional[str] = None) -> Article:
         date=date,
         site_name=site_name,
         description=description,
+    )
+
+
+def _paragraphs_from_plain(plain: str) -> str:
+    """Wrap plain text lines in escaped ``<p>`` tags for XHTML."""
+    return "".join(
+        f"<p>{escape(line)}</p>" for line in plain.splitlines() if line.strip()
     )
 
 

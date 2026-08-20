@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from kindle_send.config import Config, ConfigError, load_config, save_config
+from kindle_send.config import Config, ConfigError, interactive_setup, load_config, save_config
 
 
 def _sample(**overrides: object) -> Config:
@@ -65,3 +65,21 @@ def test_invalid_toml_raises(tmp_path: Path) -> None:
     path.write_text("this is not toml {", encoding="utf-8")
     with pytest.raises(ConfigError, match="Failed to read"):
         load_config(path)
+
+
+def test_configure_keeps_existing_password(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "config.toml"
+    save_config(
+        _sample(smtp_host="smtp.example.com", smtp_port=587),
+        path,
+    )
+    answers = iter(["new@kindle.com", "new@gmail.com"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    monkeypatch.setattr("kindle_send.config.getpass.getpass", lambda _prompt="": "")
+
+    config = interactive_setup(path)
+    assert config.kindle_email == "new@kindle.com"
+    assert config.gmail_address == "new@gmail.com"
+    assert config.gmail_app_password == "abcdefghijklmnop"
+    assert config.smtp_host == "smtp.example.com"
+    assert config.smtp_port == 587

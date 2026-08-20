@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import runpy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -43,3 +44,19 @@ def test_extraction_error_returns_one() -> None:
         side_effect=ExtractionError("nope"),
     ):
         assert main(["https://example.com/essay"]) == 1
+
+
+def test_keyboard_interrupt_returns_130() -> None:
+    with patch(
+        "kindle_send.cli.extract_article",
+        side_effect=KeyboardInterrupt,
+    ):
+        assert main(["https://example.com/essay"]) == 130
+
+
+def test_python_module_entrypoint_version(capsys: pytest.CaptureFixture[str]) -> None:
+    with patch("sys.argv", ["kindle-send", "--version"]):
+        with pytest.raises(SystemExit) as exc:
+            runpy.run_module("kindle_send", run_name="__main__")
+    assert exc.value.code == 0
+    assert __version__ in capsys.readouterr().out

@@ -43,3 +43,13 @@ def test_send_epub_logs_in_and_attaches_file(tmp_path: Path) -> None:
     assert msg["Subject"] == "An Essay"
     payloads = [part.get_payload(decode=True) for part in msg.walk()]
     assert b"PK fake epub" in payloads
+
+
+def test_rejects_oversize_attachment(tmp_path: Path) -> None:
+    epub_path = tmp_path / "essay.epub"
+    epub_path.write_bytes(b"PK fake epub")
+    with patch("kindle_send.mailer.MAX_ATTACHMENT_BYTES", 1):
+        with patch("kindle_send.mailer.smtplib.SMTP_SSL") as smtp_cls:
+            with pytest.raises(MailError, match="50 MB"):
+                send_epub(_config(), epub_path)
+            smtp_cls.assert_not_called()

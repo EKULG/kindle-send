@@ -7,6 +7,7 @@ import pytest
 from kindle_send.extract import (
     MAX_HTML_BYTES,
     ExtractionError,
+    _paragraphs_from_plain,
     _read_capped,
     extract_article,
 )
@@ -85,3 +86,8 @@ def test_read_capped_aborts_when_stream_exceeds_limit() -> None:
     assert _read_capped(page, max_bytes=75) is None
     page = FakeResponse(b"", chunks=[b"hello", b" world"])
     assert _read_capped(page, max_bytes=100) == b"hello world"
+
+
+def test_plain_fallback_escapes_html() -> None:
+    assert _paragraphs_from_plain("a < b & c > d") == "<p>a &lt; b &amp; c &gt; d</p>"
+    assert _paragraphs_from_plain("  \nkeep this\n\n") == "<p>keep this</p>"
